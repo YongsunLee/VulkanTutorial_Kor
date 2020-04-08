@@ -132,7 +132,14 @@ private:
 		glfwWindowHint(GLFW_RESIZABLE, GLFW_FALSE);
 
 		window = glfwCreateWindow(WINDOW_WIDTH, WINDOW_HEIGHT, "Vulkan", nullptr, nullptr);
+
+		glfwSetWindowUserPointer(window, this);
+
+		// Frame Buffer Resize
+		glfwSetFramebufferSizeCallback(window, framebufferResizeCallback);
 	}
+
+
 	
 	void initVulkan()
 	{
@@ -313,8 +320,17 @@ private:
 		uint32_t imageIndex;
 		// 논리장치, 스왑체인, 시간초과 (나노초 단위) UINT64_MAX : 시간 초과 비활성화
 		// 프레젠테이션 엔진이 이미지사용을 마치면 신호를 받을 동기화 개체, 이미지 인덱스를 출력하는 변수(인덱스를 이용하여 올바른 명령버퍼를 선택한다.)
-		vkAcquireNextImageKHR(device, swapChain, UINT64_MAX, imageAvailableSemaphores[currentFrame], VK_NULL_HANDLE, &imageIndex);
+		VkResult result = vkAcquireNextImageKHR(device, swapChain, UINT64_MAX, imageAvailableSemaphores[currentFrame], VK_NULL_HANDLE, &imageIndex);
 		
+		// VK_ERROR_OUT_OF_DATE_KHR : 스왑체인이 표면과 호환되지 않아 더 이상 렌더링에 사용할 수 없는경우 recreateSwapChain 함수를 호출한다.
+		// VK_SUBOPTIMAL_KHR : 스왑체인을 사용하여 surface에 성공적으로 표시할 수 있으나 surface 속성이 더이상 정확하게 일치하지 않음
+		if (result == VK_ERROR_OUT_OF_DATE_KHR) {
+			recreateSwapChain();
+			return;
+		} else if ( result != VK_SUCCESS && result != VK_SUBOPTIMAL_KHR) {
+			throw std::runtime_error("failed to acquire swap chain image!");
+		}
+
 		if (imagesInFlight[imageIndex] != VK_NULL_HANDLE) {
 			vkWaitForFences(device, 1, &imagesInFlight[imageIndex], VK_TRUE, UINT64_MAX);
 		}
@@ -355,17 +371,27 @@ private:
 		presentInfo.pSwapchains = swapChains;
 		presentInfo.pImageIndices = &imageIndex;
 
-		presentInfo.pResults = nullptr;															// 프레젠테이션에 성공한 경우 모든 개별 스왑체인을 확인하기 위해 VkResult 값의 배열을 사용가능
+		//presentInfo.pResults = nullptr;															// 프레젠테이션에 성공한 경우 모든 개별 스왑체인을 확인하기 위해 VkResult 값의 배열을 사용가능
 
-		vkQueuePresentKHR(presentQueue, &presentInfo);											// 이미지를 스왑체인에 제시하라는 요청을 제출한다.
+		result = vkQueuePresentKHR(presentQueue, &presentInfo);											// 이미지를 스왑체인에 제시하라는 요청을 제출한다.
 
-		vkQueueWaitIdle(presentQueue);
+		if (result == VK_ERROR_OUT_OF_DATE_KHR || result == VK_SUBOPTIMAL_KHR || framebufferResized) {
+			framebufferResized = false;
+			recreateSwapChain();
+		} else if (result != VK_SUCCESS) {
+			throw std::runtime_error("failed to present swap chain image!");
+		}
+
+		//vkQueueWaitIdle(presentQueue);
 
 		currentFrame = (currentFrame + 1) % MAX_FRAMES_IN_FLIGHT;
 	}
 
 	void cleanup()
 	{
+		// 스왑체인 삭제
+		cleanupSwapChain();
+
 		// 세마포어 삭제
 		for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; ++i) {
 			vkDestroySemaphore(device, renderFinishedSemaphores[i], nullptr);
@@ -375,28 +401,6 @@ private:
 		
 		// 커맨드 풀 삭제
 		vkDestroyCommandPool(device, commandPool, nullptr);
-
-		// 프레임 버퍼 삭제
-		for (auto framebuffer : swapChainFramebuffers) {
-			vkDestroyFramebuffer(device, framebuffer, nullptr);
-		}
-
-		// 그래픽스 파이프라인 삭제
-		vkDestroyPipeline(device, graphicsPipeline, nullptr);
-
-		// PipeLine Layout 삭제
-		vkDestroyPipelineLayout(device, pipelineLayout, nullptr);
-
-		// Render Pass 삭제
-		vkDestroyRenderPass(device, renderPass, nullptr);
-
-		// Image View 삭제
-		for (auto imageView : swapChainImageViews) {
-			vkDestroyImageView(device, imageView, nullptr);
-		}
-
-		// 스왑체인 삭제
-		vkDestroySwapchainKHR(device, swapChain, nullptr);
 
 		// vk Device 제거
 		vkDestroyDevice(device, nullptr);
@@ -637,7 +641,9 @@ private:
 			return capabilites.currentExtent;
 		}
 		else {
-			VkExtent2D actualExtent = {WINDOW_WIDTH, WINDOW_HEIGHT};
+			int width, height;
+			glfwGetFramebufferSize(window, &width, &height);
+			VkExtent2D actualExtent = { static_cast<uint32_t>(width), static_cast<uint32_t>(height) };
 
 			actualExtent.width = std::max(capabilites.minImageExtent.width, std::min(capabilites.maxImageExtent.width, actualExtent.width));
 			actualExtent.height = std::max(capabilites.minImageExtent.height, std::min(capabilites.maxImageExtent.height, actualExtent.height));
@@ -1075,8 +1081,63 @@ private:
 				throw std::runtime_error("failed to craete semaphores!");
 			}
 		}
+	}
 
-		
+	// 스왑체인의 정리
+	void cleanupSwapChain()
+	{
+		// 프레임 버퍼 삭제
+		for (auto framebuffer : swapChainFramebuffers) {
+			vkDestroyFramebuffer(device, framebuffer, nullptr);
+		}
+
+		// 커맨드 버퍼 초기화(Free)
+		vkFreeCommandBuffers(device, commandPool, static_cast<uint32_t>(commandBuffers.size()), commandBuffers.data());
+
+		// 그래픽스 파이프라인 삭제
+		vkDestroyPipeline(device, graphicsPipeline, nullptr);
+
+		// PipeLine Layout 삭제
+		vkDestroyPipelineLayout(device, pipelineLayout, nullptr);
+
+		// Render Pass 삭제
+		vkDestroyRenderPass(device, renderPass, nullptr);
+
+		// Image View 삭제
+		for (auto imageView : swapChainImageViews) {
+			vkDestroyImageView(device, imageView, nullptr);
+		}
+
+		// 스왑체인 삭제
+		vkDestroySwapchainKHR(device, swapChain, nullptr);
+	}
+
+	// 스왑체인의 크기 변경 등에 의해 새로 만들어저야 하는 객체
+	void recreateSwapChain()
+	{
+		int width = 0, height = 0;
+		glfwGetFramebufferSize(window, &width, &height);
+		while (width == 0 || height == 0) {
+			glfwGetFramebufferSize(window, &width, &height);
+			glfwWaitEvents();
+		}
+
+		vkDeviceWaitIdle(device);
+
+		cleanupSwapChain();
+
+		createSwapChain();
+		createImageViews();
+		createRenderPass();
+		createGraphicsPipeline();
+		createFrameBuffers();
+		createCommandBuffers();
+	}
+
+	static void framebufferResizeCallback(GLFWwindow* window, int width, int height)
+	{
+		auto app = reinterpret_cast<HellorTriangleApplication*>(glfwGetWindowUserPointer(window));
+		app->framebufferResized = true;
 	}
 
 private:
@@ -1132,6 +1193,9 @@ private:
 
 	// frame
 	size_t currentFrame = 0;
+
+	// resize
+	bool framebufferResized = false;
 
 };
 
