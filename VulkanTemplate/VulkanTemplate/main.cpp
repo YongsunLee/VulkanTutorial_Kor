@@ -24,6 +24,9 @@ const int MAX_FRAMES_IN_FLIGHT = 2;
 #include <algorithm>
 #include <fstream>
 
+#include <glm.hpp>
+#include <array>
+
 #define WINDOW_WIDTH 800
 #define WINDOW_HEIGHT 600
 
@@ -55,7 +58,38 @@ struct SwapChainSupportDetails {
 	VkSurfaceCapabilitiesKHR capabilities;			// 기본 Surface 기능
 	std::vector<VkSurfaceFormatKHR> formats;			// Surface 형식(format)
 	std::vector<VkPresentModeKHR> presentModes;		// 사용 가능한 presentation 모드
+};
 
+struct Vertex {
+	glm::vec2 pos;
+	glm::vec3 color;
+
+	// GPU 메모리에 업로드 된 후 버텍스 쉐이더에 전달하는 방법을 알리는 것
+	static VkVertexInputBindingDescription getBindingDescription() {
+		VkVertexInputBindingDescription bindingDescription = {};
+
+		bindingDescription.binding = 0;											// 
+		bindingDescription.stride = sizeof(Vertex);								// 한 항목에서 다음 항목까지의 바이트수
+		bindingDescription.inputRate = VK_VERTEX_INPUT_RATE_VERTEX;				// 각 정점 다음에 다음 데이터 입력으로 이동
+
+		return bindingDescription;
+	}
+
+	static std::array<VkVertexInputAttributeDescription, 2> getAttributeDescriptions() {
+		std::array<VkVertexInputAttributeDescription, 2> attributeDescriptions = {};
+
+		attributeDescriptions[0].binding = 0;
+		attributeDescriptions[0].location = 0;									// vertex Shader Location 0번째 in
+		attributeDescriptions[0].format = VK_FORMAT_R32G32_SFLOAT;				// attribute의 데이터 유형 현재 vec2라는 의미
+		attributeDescriptions[0].offset = offsetof(Vertex, pos);
+
+		attributeDescriptions[1].binding = 0;
+		attributeDescriptions[1].location = 1;
+		attributeDescriptions[1].format = VK_FORMAT_R32G32B32_SFLOAT;			// vec3
+		attributeDescriptions[1].offset = offsetof(Vertex, color);
+
+		return attributeDescriptions;
+	}
 };
 
 // file Load
@@ -175,6 +209,9 @@ private:
 
 		// Command Pool
 		createCommandPool();
+
+		// Vertex Buffer
+		createVertexBuffer();
 
 		// Command Buffer
 		createCommandBuffers();
@@ -391,6 +428,12 @@ private:
 	{
 		// 스왑체인 삭제
 		cleanupSwapChain();
+
+		// Vertex Buffer 삭제
+		vkDestroyBuffer(device, vertexBuffer, nullptr);
+
+		// vertex Buffer에 할당된 Mem
+		vkFreeMemory(device, vertexBufferMemory, nullptr);
 
 		// 세마포어 삭제
 		for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; ++i) {
@@ -823,10 +866,14 @@ private:
 		// Vertex Input
 		VkPipelineVertexInputStateCreateInfo vertexInputInfo = {};
 		vertexInputInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
-		vertexInputInfo.vertexBindingDescriptionCount = 0;										// 데이터 간 각겨과 데이터가 버텍스당 또는 인스턴스
-		vertexInputInfo.pVertexBindingDescriptions = nullptr;
-		vertexInputInfo.vertexAttributeDescriptionCount = 0;									// 버텍스 셰이더에 전달될 속성의 유형
-		vertexInputInfo.pVertexAttributeDescriptions = nullptr;
+		
+		auto bindingDescription = Vertex::getBindingDescription();
+		auto attributeDescriptions = Vertex::getAttributeDescriptions();
+
+		vertexInputInfo.vertexBindingDescriptionCount = 1;										// 데이터 간 각겨과 데이터가 버텍스당 또는 인스턴스
+		vertexInputInfo.pVertexBindingDescriptions = &bindingDescription;
+		vertexInputInfo.vertexAttributeDescriptionCount = static_cast<uint32_t>(attributeDescriptions.size());									// 버텍스 셰이더에 전달될 속성의 유형
+		vertexInputInfo.pVertexAttributeDescriptions = attributeDescriptions.data();
 
 		// Input assembly
 		VkPipelineInputAssemblyStateCreateInfo inputAssembly = {};
@@ -1009,6 +1056,55 @@ private:
 		}
 	}
 
+	void createVertexBuffer()
+	{
+		VkBufferCreateInfo bufferInfo = {};
+		bufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+		bufferInfo.size = sizeof(vertices[0]) * vertices.size();
+		bufferInfo.usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT;
+		bufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+
+		if (vkCreateBuffer(device, &bufferInfo, nullptr, &vertexBuffer) != VK_SUCCESS) {
+			throw std::runtime_error("failed to create vertex buffer!");
+		}
+
+		// 버텍스 버퍼 Memory
+		VkMemoryRequirements memRequirements;
+		vkGetBufferMemoryRequirements(device, vertexBuffer, &memRequirements);
+
+		VkMemoryAllocateInfo allocInfo = {};
+		allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+		allocInfo.allocationSize = memRequirements.size;
+		allocInfo.memoryTypeIndex = findMemoryType(memRequirements.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+
+		if (vkAllocateMemory(device, &allocInfo, nullptr, &vertexBufferMemory) != VK_SUCCESS){
+			throw std::runtime_error("failed to allocate vertex buffer memory!");
+		}
+
+		vkBindBufferMemory(device, vertexBuffer, vertexBufferMemory, 0);
+
+		// 정점 데이터를 버퍼에 복사
+		void* data;
+		vkMapMemory(device, vertexBufferMemory, 0, bufferInfo.size, 0, &data);
+		memcpy(data, vertices.data(), (size_t)bufferInfo.size);
+		vkUnmapMemory(device, vertexBufferMemory);
+	}
+
+	uint32_t findMemoryType(uint32_t typeFilter, VkMemoryPropertyFlags properties) 
+	{
+		VkPhysicalDeviceMemoryProperties memProperties;
+		vkGetPhysicalDeviceMemoryProperties(physicalDevice, &memProperties);
+
+		// 메모리 유형 
+		for (uint32_t i = 0; i < memProperties.memoryTypeCount; ++i) {
+			if (typeFilter & (1<<i) && (memProperties.memoryTypes[i].propertyFlags & properties) == properties) {
+				return i;
+			}
+		}
+
+		throw std::runtime_error("failed to find suitable memory type!");
+	}
+
 	void createCommandBuffers()
 	{
 		commandBuffers.resize(swapChainFramebuffers.size());
@@ -1049,8 +1145,13 @@ private:
 			// 두번째 파라메터 : 그래픽 or 컴퓨터 파이프라인인지 지정하는 변수
 			vkCmdBindPipeline(commandBuffers[i], VK_PIPELINE_BIND_POINT_GRAPHICS, graphicsPipeline);
 
+			// Vertex Buffer Binding (Rendering)
+			VkBuffer vertexBuffers[] = {vertexBuffer};
+			VkDeviceSize offsets[] = {0};
+			vkCmdBindVertexBuffers(commandBuffers[i], 0, 1, vertexBuffers, offsets);
+
 			// 명령버퍼, 버텍스 갯수, 인스턴스 렌더링(사용하지 않는 경우 1), 버텍스 버퍼 오프셋, 인스턴스 렌더링 오프셋
-			vkCmdDraw(commandBuffers[i], 3, 1, 0, 0);
+			vkCmdDraw(commandBuffers[i], static_cast<uint32_t>(vertices.size()), 1, 0, 0);
 
 			vkCmdEndRenderPass(commandBuffers[i]);
 
@@ -1197,6 +1298,14 @@ private:
 	// resize
 	bool framebufferResized = false;
 
+	const std::vector<Vertex> vertices = {
+		{ { 0.0f, -0.5f}, {1.0f, 0.0f, 0.0f}},
+		{ { 0.5f,  0.5f}, {0.0f, 1.0f, 0.0f}},
+		{ {-0.5f,  0.5f}, {0.0f, 0.0f, 1.0f}}
+	};
+
+	VkBuffer vertexBuffer;
+	VkDeviceMemory vertexBufferMemory;
 };
 
 int main()
