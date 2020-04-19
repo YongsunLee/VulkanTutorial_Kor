@@ -1,3 +1,2 @@
 ﻿  main.cpp
-LINK : warning LNK4098: 'MSVCRT' defaultlib가 다른 라이브러리와 충돌합니다. /NODEFAULTLIB:library를 사용하십시오.
   VulkanTemplate.vcxproj -> D:\대학원\2학년 1학기\Vulkan\VulkanTutorial_Kor\VulkanTemplate\x64\Debug\VulkanTemplate.exe
